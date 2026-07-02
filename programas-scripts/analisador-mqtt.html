@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Analisador MQTTLoader — Latência & Throughput</title>
+<style>
+  :root{
+    --bg:#0E1418; --panel:#161E24; --panel-2:#1B262D; --line:#243038;
+    --txt:#E6EDF0; --muted:#7C8B95; --muted-2:#566570;
+    --trace:#36D2C4;          /* latência média / sinal principal */
+    --trace-2:#F2B441;        /* p95 / throughput */
+    --danger:#E5746B;
+    --mono:ui-monospace,"SF Mono","Cascadia Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--bg);color:var(--txt);font-family:var(--sans);
+    font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 20px 80px}
+  header{border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:28px}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--trace);margin:0 0 8px}
+  h1{font-size:24px;font-weight:600;margin:0 0 6px;letter-spacing:-.01em}
+  .sub{color:var(--muted);margin:0;max-width:70ch}
+  h2{font-size:13px;font-family:var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);
+     border-bottom:1px solid var(--line);padding-bottom:8px;margin:36px 0 16px;font-weight:600}
+
+  /* drop zone */
+  .drop{
+    border:1.5px dashed var(--line);border-radius:10px;padding:34px 20px;text-align:center;
+    background:var(--panel);transition:border-color .15s,background .15s;cursor:pointer;
+  }
+  .drop.over{border-color:var(--trace);background:var(--panel-2)}
+  .drop strong{color:var(--txt)}
+  .drop .hint{color:var(--muted);font-size:13px;margin-top:6px}
+  .drop code{font-family:var(--mono);color:var(--trace);font-size:12px}
+  input[type=file]{display:none}
+
+  /* controls */
+  .controls{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-end;margin-top:18px}
+  .ctl{display:flex;flex-direction:column;gap:5px}
+  .ctl label{font-size:11px;font-family:var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .ctl input{
+    width:90px;background:var(--panel);border:1px solid var(--line);color:var(--txt);
+    font-family:var(--mono);font-size:14px;padding:7px 9px;border-radius:6px;
+  }
+  .ctl input:focus{outline:none;border-color:var(--trace)}
+  .ctl .unit{color:var(--muted-2);font-size:11px}
+
+  /* file list */
+  .files{display:flex;flex-direction:column;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:6px}
+  .frow{display:grid;grid-template-columns:1fr 84px 64px 90px 28px;gap:10px;align-items:center;background:var(--panel);padding:10px 12px}
+  .fname{font-family:var(--mono);font-size:12px;color:var(--txt);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .frow input{width:100%;background:var(--panel-2);border:1px solid var(--line);color:var(--txt);font-family:var(--mono);font-size:12px;padding:4px 6px;border-radius:4px;text-align:center}
+  .frow input:focus{outline:none;border-color:var(--trace)}
+  .ftag{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .ftag.ok{color:var(--trace)} .ftag.err{color:var(--danger)}
+  .fx{background:none;border:none;color:var(--muted-2);cursor:pointer;font-size:16px;padding:0;line-height:1}
+  .fx:hover{color:var(--danger)}
+  .fhead{grid-template-columns:1fr 84px 64px 90px 28px;background:var(--panel-2);font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted-2);padding:8px 12px}
+
+  /* cards */
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px 18px}
+  .card .v{font-family:var(--mono);font-size:26px;color:var(--trace);letter-spacing:-.02em}
+  .card .k{font-size:11px;color:var(--muted);font-family:var(--mono);letter-spacing:.06em;text-transform:uppercase;margin-top:2px}
+
+  /* table */
+  .tbl-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:8px}
+  table{border-collapse:collapse;width:100%;font-family:var(--mono);font-size:12.5px}
+  th,td{padding:9px 13px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--line)}
+  th:first-child,td:first-child{text-align:left}
+  thead th{background:var(--panel-2);color:var(--muted);font-weight:600;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;position:sticky;top:0}
+  tbody tr{background:var(--panel)}
+  tbody tr:hover{background:var(--panel-2)}
+  td.hl{color:var(--trace)} td.hl2{color:var(--trace-2)}
+  caption{caption-side:bottom;text-align:left;color:var(--muted-2);font-family:var(--mono);font-size:11px;padding:8px 2px}
+
+  /* charts */
+  .chart{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px 8px 8px}
+  .chart h3{font-family:var(--mono);font-size:12px;letter-spacing:.06em;color:var(--txt);margin:0 0 2px;padding:0 10px;font-weight:600}
+  .chart .cap{color:var(--muted);font-size:11.5px;padding:0 10px;margin:0 0 8px}
+  .legend{display:flex;gap:18px;padding:6px 14px 2px;flex-wrap:wrap}
+  .legend span{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .swatch{width:14px;height:3px;border-radius:2px;display:inline-block}
+  .swatch.dash{height:0;border-top:2px dashed var(--muted-2);width:16px}
+  svg text{font-family:var(--mono)}
+
+  /* buttons */
+  .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+  button.btn{
+    background:var(--panel-2);border:1px solid var(--line);color:var(--txt);font-family:var(--mono);
+    font-size:12px;padding:9px 15px;border-radius:6px;cursor:pointer;transition:border-color .15s,color .15s;
+  }
+  button.btn:hover{border-color:var(--trace);color:var(--trace)}
+  button.btn:disabled{opacity:.4;cursor:not-allowed}
+
+  .empty{color:var(--muted-2);font-size:13px;text-align:center;padding:30px;font-family:var(--mono)}
+  .grid2{display:grid;grid-template-columns:1fr;gap:16px}
+  @media(min-width:900px){.grid2{grid-template-columns:1fr 1fr}}
+  details summary{cursor:pointer;color:var(--muted);font-family:var(--mono);font-size:12px;padding:6px 0}
+  details summary:hover{color:var(--txt)}
+  .note{background:var(--panel);border-left:2px solid var(--trace);padding:12px 16px;border-radius:0 6px 6px 0;color:var(--muted);font-size:12.5px;margin-top:14px}
+  .note b{color:var(--txt)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <p class="eyebrow">Bancada · MQTT</p>
+    <h1>Analisador de latência e throughput</h1>
+    <p class="sub">Lê os arquivos CSV brutos gerados pelo MQTTLoader (parâmetro <code style="font-family:var(--mono);color:var(--trace)">output</code>) e calcula média, desvio‑padrão, p50/p95/p99 da latência de entrega e o throughput por cenário. Tudo roda no navegador — nenhum dado sai da sua máquina.</p>
+  </header>
+
+  <div class="drop" id="drop">
+    <strong>Arraste os CSVs aqui</strong> ou clique para selecionar
+    <div class="hint">Nomeie-os como <code>pub30_run2.csv</code> para agrupamento automático. Você pode corrigir os rótulos depois.</div>
+  </div>
+  <input type="file" id="file" multiple accept=".csv">
+
+  <div class="controls">
+    <div class="ctl">
+      <label>Descarte inicial (ramp‑up)</label>
+      <div><input type="number" id="rampUp" value="5" min="0" step="1"> <span class="unit">segundos</span></div>
+    </div>
+    <div class="ctl">
+      <label>Descarte final (ramp‑down)</label>
+      <div><input type="number" id="rampDown" value="5" min="0" step="1"> <span class="unit">segundos</span></div>
+    </div>
+    <div class="ctl">
+      <label>Carga ofertada por publisher</label>
+      <div><input type="number" id="offered" value="10" min="0" step="0.1"> <span class="unit">msg/s</span></div>
+    </div>
+  </div>
+  <div class="note">Os descartes excluem o transitório de início e fim para medir o regime permanente. O MQTTLoader aplica <b>ramp_up/ramp_down ao console, mas não ao CSV</b> — então o recorte é refeito aqui sobre os mesmos valores que você usou na configuração, para que console e CSV fiquem consistentes.</div>
+
+  <h2>Arquivos</h2>
+  <div id="fileArea"><div class="empty">Nenhum arquivo carregado.</div></div>
+
+  <h2>Resumo</h2>
+  <div id="cards"><div class="empty">—</div></div>
+
+  <h2>Resultado por cenário</h2>
+  <div id="aggArea"><div class="empty">—</div></div>
+  <div class="actions">
+    <button class="btn" id="expAggCsv" disabled>Baixar agregado (CSV)</button>
+    <button class="btn" id="expRunCsv" disabled>Baixar por execução (CSV)</button>
+    <button class="btn" id="expJson" disabled>Baixar tudo (JSON)</button>
+  </div>
+
+  <h2>Gráficos</h2>
+  <div class="grid2">
+    <div class="chart">
+      <h3>Latência × nº de publishers</h3>
+      <p class="cap">Traço reto ⇒ degradação linear. Curvatura para cima ⇒ ponto de inflexão / comportamento não linear.</p>
+      <div class="legend">
+        <span><i class="swatch" style="background:var(--trace)"></i> Latência média (±dp entre execuções)</span>
+        <span><i class="swatch" style="background:var(--trace-2)"></i> p95</span>
+      </div>
+      <div id="chartLat"><div class="empty">—</div></div>
+    </div>
+    <div class="chart">
+      <h3>Throughput × nº de publishers</h3>
+      <p class="cap">Divergência da linha tracejada indica que o broker deixou de entregar a carga ofertada.</p>
+      <div class="legend">
+        <span><i class="swatch" style="background:var(--trace-2)"></i> Entregue (medido)</span>
+        <span><i class="swatch dash"></i> Ofertado (teórico)</span>
+      </div>
+      <div id="chartTh"><div class="empty">—</div></div>
+    </div>
+  </div>
+
+  <details style="margin-top:24px">
+    <summary>Como cada número é calculado</summary>
+    <div class="note" style="border-left-color:var(--muted-2)">
+      <b>Latência</b>: para cada linha do CSV com evento <code style="font-family:var(--mono)">R</code> (recebida), a 4ª coluna traz a latência em microssegundos; convertida para ms. Estatísticas calculadas só sobre mensagens dentro da janela de regime permanente.<br>
+      <b>Percentis</b>: interpolação linear (tipo 7, igual ao padrão de numpy/pandas).<br>
+      <b>Desvio‑padrão</b>: amostral (divisor n−1).<br>
+      <b>Throughput entregue</b>: nº de mensagens <code style="font-family:var(--mono)">R</code> na janela ÷ duração da janela (s).<br>
+      <b>Integridade</b>: razão R/S sobre o arquivo inteiro (sem recorte). Com QoS 1 deve ficar ≈ 1,00; quedas indicam perda ou mensagens em trânsito no encerramento.<br>
+      <b>Agregado</b>: média ± dp dos valores das execuções independentes de cada cenário.
+    </div>
+  </details>
+</div>
+
+<script>
+"use strict";
+
+const state = { files: [] }; // {id,name,raw,pub,run,parsed,stats,error}
+
+const $ = s => document.querySelector(s);
+const drop = $("#drop"), fileInput = $("#file");
+
+drop.addEventListener("click", () => fileInput.click());
+["dragover","dragenter"].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add("over");}));
+["dragleave","drop"].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove("over");}));
+drop.addEventListener("drop",ev=>handleFiles(ev.dataTransfer.files));
+fileInput.addEventListener("change",ev=>handleFiles(ev.target.files));
+["rampUp","rampDown","offered"].forEach(id=>$("#"+id).addEventListener("input",recomputeAll));
+
+function handleFiles(fileList){
+  const arr = Array.from(fileList).filter(f=>/\.csv$/i.test(f.name));
+  let pending = arr.length;
+  if(!pending) return;
+  arr.forEach(f=>{
+    const reader = new FileReader();
+    reader.onload = () => {
+      const m = f.name.match(/pub(\d+)[_-]?run(\d+)/i);
+      const id = "f"+Math.random().toString(36).slice(2,9);
+      state.files.push({
+        id, name:f.name, raw:reader.result,
+        pub: m?parseInt(m[1],10):"", run: m?parseInt(m[2],10):"",
+        parsed:null, stats:null, error:null
+      });
+      if(--pending===0) recomputeAll();
+    };
+    reader.readAsText(f);
+  });
+}
+
+/* ---------- parsing & stats ---------- */
+function parseCsv(text){
+  const lines = text.split(/\r?\n/);
+  let startTs = null;
+  let sCount = 0, rCount = 0;
+  const rec = []; // {ts, latUs}
+  for(let i=0;i<lines.length;i++){
+    const ln = lines[i];
+    if(!ln) continue;
+    const c = ln.split(",");
+    const ts = parseInt(c[0],10);
+    if(!Number.isFinite(ts)) continue;
+    if(startTs===null) startTs = ts;          // primeira linha = início da medição
+    const ev = c[2];
+    if(ev==="S"){ sCount++; }
+    else if(ev==="R"){ rCount++; const lat = parseInt(c[3],10); if(Number.isFinite(lat)) rec.push({ts, latUs:lat}); }
+  }
+  return { startTs, sCount, rCount, rec };
+}
+
+function percentile(sorted, p){
+  const n = sorted.length;
+  if(n===0) return NaN;
+  if(n===1) return sorted[0];
+  const rank = (p/100)*(n-1);
+  const lo = Math.floor(rank), hi = Math.ceil(rank);
+  if(lo===hi) return sorted[lo];
+  return sorted[lo] + (sorted[hi]-sorted[lo])*(rank-lo);
+}
+function mean(a){ return a.reduce((s,x)=>s+x,0)/a.length; }
+function sd(a){ if(a.length<2) return 0; const m=mean(a); return Math.sqrt(a.reduce((s,x)=>s+(x-m)*(x-m),0)/(a.length-1)); }
+
+function computeStats(parsed, rampUpS, rampDownS){
+  const { startTs, sCount, rCount, rec } = parsed;
+  if(rec.length===0) return { error:"sem mensagens recebidas (R)" };
+  const lastTs = rec[rec.length-1].ts > startTs ? Math.max(...rec.map(r=>r.ts)) : startTs;
+  const winStart = startTs + rampUpS*1e6;
+  const winEnd   = lastTs - rampDownS*1e6;
+  const winSec   = (winEnd - winStart)/1e6;
+  if(winSec<=0) return { error:"janela vazia (descarte alto demais?)" };
+  const inWin = rec.filter(r=>r.ts>=winStart && r.ts<=winEnd);
+  if(inWin.length===0) return { error:"nenhuma mensagem na janela" };
+  const latMs = inWin.map(r=>r.latUs/1000).sort((a,b)=>a-b);
+  return {
+    nWin: inWin.length,
+    winSec,
+    throughput: inWin.length/winSec,
+    meanMs: mean(latMs),
+    sdMs: sd(latMs),
+    p50: percentile(latMs,50),
+    p95: percentile(latMs,95),
+    p99: percentile(latMs,99),
+    minMs: latMs[0],
+    maxMs: latMs[latMs.length-1],
+    integrity: sCount>0 ? rCount/sCount : NaN,
+    sCount, rCount
+  };
+}
+
+function recomputeAll(){
+  const rampUp = Math.max(0, parseFloat($("#rampUp").value)||0);
+  const rampDown = Math.max(0, parseFloat($("#rampDown").value)||0);
+  state.files.forEach(f=>{
+    try{
+      f.parsed = f.parsed || parseCsv(f.raw);
+      const s = computeStats(f.parsed, rampUp, rampDown);
+      if(s.error){ f.error=s.error; f.stats=null; } else { f.error=null; f.stats=s; }
+    }catch(e){ f.error="erro ao processar"; f.stats=null; }
+  });
+  renderFiles(); renderCards(); renderAgg(); renderCharts();
+}
+
+/* ---------- aggregation ---------- */
+function aggregate(){
+  const groups = {};
+  state.files.forEach(f=>{
+    if(!f.stats || f.pub==="" || f.pub===null) return;
+    const k = f.pub;
+    (groups[k] = groups[k] || []).push(f);
+  });
+  const rows = Object.keys(groups).map(k=>parseInt(k,10)).sort((a,b)=>a-b).map(pub=>{
+    const fs = groups[pub];
+    const pick = key => fs.map(f=>f.stats[key]);
+    return {
+      pub, n:fs.length,
+      meanMs:mean(pick("meanMs")), meanSd:sd(pick("meanMs")),
+      p50:mean(pick("p50")),
+      p95:mean(pick("p95")), p95Sd:sd(pick("p95")),
+      p99:mean(pick("p99")),
+      sdMs:mean(pick("sdMs")),
+      throughput:mean(pick("throughput")), thSd:sd(pick("throughput")),
+      integrity:mean(pick("integrity"))
+    };
+  });
+  return rows;
+}
+
+/* ---------- rendering ---------- */
+function renderFiles(){
+  const area = $("#fileArea");
+  if(state.files.length===0){ area.innerHTML='<div class="empty">Nenhum arquivo carregado.</div>'; return; }
+  let html = '<div class="files"><div class="frow fhead"><span>Arquivo</span><span>Publishers</span><span>Exec.</span><span>Status</span><span></span></div>';
+  state.files.forEach(f=>{
+    let tag, cls;
+    if(f.error){ tag=f.error; cls="err"; }
+    else if(f.stats){ tag=f.stats.rCount.toLocaleString("pt-BR")+" R"; cls="ok"; }
+    else { tag="…"; cls=""; }
+    html += `<div class="frow">
+      <span class="fname" title="${f.name}">${f.name}</span>
+      <input type="number" data-id="${f.id}" data-k="pub" value="${f.pub}" min="0" placeholder="?">
+      <input type="number" data-id="${f.id}" data-k="run" value="${f.run}" min="0" placeholder="?">
+      <span class="ftag ${cls}">${tag}</span>
+      <button class="fx" data-del="${f.id}" title="Remover">×</button>
+    </div>`;
+  });
+  html += '</div>';
+  area.innerHTML = html;
+  area.querySelectorAll("input").forEach(inp=>inp.addEventListener("input",e=>{
+    const f = state.files.find(x=>x.id===e.target.dataset.id);
+    const v = e.target.value===""?"":parseInt(e.target.value,10);
+    f[e.target.dataset.k]=v;
+    renderCards(); renderAgg(); renderCharts();
+  }));
+  area.querySelectorAll("[data-del]").forEach(b=>b.addEventListener("click",e=>{
+    state.files = state.files.filter(x=>x.id!==e.target.dataset.del);
+    recomputeAll();
+  }));
+}
+
+function renderCards(){
+  const ok = state.files.filter(f=>f.stats);
+  const scen = new Set(ok.filter(f=>f.pub!=="").map(f=>f.pub));
+  const totR = ok.reduce((s,f)=>s+f.stats.rCount,0);
+  const el = $("#cards");
+  if(ok.length===0){ el.innerHTML='<div class="empty">—</div>'; return; }
+  el.innerHTML = `
+    <div class="card"><div class="v">${ok.length}</div><div class="k">arquivos válidos</div></div>
+    <div class="card"><div class="v">${scen.size}</div><div class="k">cenários</div></div>
+    <div class="card"><div class="v">${totR.toLocaleString("pt-BR")}</div><div class="k">mensagens entregues</div></div>`;
+}
+
+const f2 = x => Number.isFinite(x)? x.toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2}) : "—";
+const f0 = x => Number.isFinite(x)? Math.round(x).toLocaleString("pt-BR") : "—";
+
+function renderAgg(){
+  const rows = aggregate();
+  const area = $("#aggArea");
+  if(rows.length===0){ area.innerHTML='<div class="empty">Defina o nº de publishers dos arquivos para agrupar.</div>'; setExport(false,rows); return; }
+  let html = '<div class="tbl-wrap"><table><thead><tr>'+
+    '<th>Publishers</th><th>n</th><th>Latência média (ms)</th><th>dp média</th><th>p50 (ms)</th><th>p95 (ms)</th><th>p99 (ms)</th><th>Throughput (msg/s)</th><th>R/S</th>'+
+    '</tr></thead><tbody>';
+  rows.forEach(r=>{
+    html += `<tr>
+      <td>${r.pub}</td><td>${r.n}</td>
+      <td class="hl">${f2(r.meanMs)} ± ${f2(r.meanSd)}</td>
+      <td>${f2(r.sdMs)}</td>
+      <td>${f2(r.p50)}</td>
+      <td class="hl2">${f2(r.p95)}</td>
+      <td>${f2(r.p99)}</td>
+      <td>${f0(r.throughput)} ± ${f0(r.thSd)}</td>
+      <td>${f2(r.integrity)}</td>
+    </tr>`;
+  });
+  html += '</tbody><caption>Valores agregados como média ± desvio‑padrão entre as execuções de cada cenário.</caption></table></div>';
+  area.innerHTML = html;
+  setExport(true,rows);
+}
+
+/* ---------- SVG charts (sem dependências) ---------- */
+function lineChart(container, series, opts){
+  const W=720,H=380, pad={l:62,r:18,t:16,b:46};
+  const xs = opts.xs;
+  const xMin = Math.min(...xs), xMax = Math.max(...xs);
+  let yMax = 0;
+  series.forEach(s=>s.points.forEach(p=>{ const top=p.y+(p.e||0); if(top>yMax) yMax=top; }));
+  if(opts.refLine) opts.refLine.forEach(p=>{ if(p.y>yMax) yMax=p.y; });
+  yMax = yMax<=0?1:yMax*1.12;
+  const X = v => pad.l + (xMax===xMin?0.5:(v-xMin)/(xMax-xMin))*(W-pad.l-pad.r);
+  const Y = v => H-pad.b - (v/yMax)*(H-pad.t-pad.b);
+
+  let g = `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet">`;
+  // grid + y ticks
+  const yt=5;
+  for(let i=0;i<=yt;i++){
+    const val=yMax*i/yt, y=Y(val);
+    g+=`<line x1="${pad.l}" y1="${y}" x2="${W-pad.r}" y2="${y}" stroke="#243038" stroke-width="1"/>`;
+    g+=`<text x="${pad.l-8}" y="${y+4}" fill="#566570" font-size="11" text-anchor="end">${val>=100?Math.round(val):val.toFixed(val<10?1:0)}</text>`;
+  }
+  // x ticks at scenario values
+  xs.forEach(v=>{
+    const x=X(v);
+    g+=`<text x="${x}" y="${H-pad.b+20}" fill="#7C8B95" font-size="11" text-anchor="middle">${v}</text>`;
+    g+=`<line x1="${x}" y1="${H-pad.b}" x2="${x}" y2="${H-pad.b+4}" stroke="#566570"/>`;
+  });
+  g+=`<text x="${(pad.l+W-pad.r)/2}" y="${H-6}" fill="#566570" font-size="11" text-anchor="middle">publishers simultâneos</text>`;
+  g+=`<text transform="translate(16,${(pad.t+H-pad.b)/2}) rotate(-90)" fill="#566570" font-size="11" text-anchor="middle">${opts.yLabel}</text>`;
+
+  // reference (offered) line
+  if(opts.refLine){
+    const d = opts.refLine.map((p,i)=>(i?"L":"M")+X(p.x)+" "+Y(p.y)).join(" ");
+    g+=`<path d="${d}" fill="none" stroke="#566570" stroke-width="1.5" stroke-dasharray="5 4"/>`;
+  }
+  // series
+  series.forEach(s=>{
+    const d = s.points.map((p,i)=>(i?"L":"M")+X(p.x)+" "+Y(p.y)).join(" ");
+    g+=`<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2"/>`;
+    s.points.forEach(p=>{
+      if(p.e){
+        g+=`<line x1="${X(p.x)}" y1="${Y(p.y-p.e)}" x2="${X(p.x)}" y2="${Y(p.y+p.e)}" stroke="${s.color}" stroke-width="1.4" opacity=".7"/>`;
+        g+=`<line x1="${X(p.x)-3}" y1="${Y(p.y+p.e)}" x2="${X(p.x)+3}" y2="${Y(p.y+p.e)}" stroke="${s.color}" stroke-width="1.4" opacity=".7"/>`;
+        g+=`<line x1="${X(p.x)-3}" y1="${Y(p.y-p.e)}" x2="${X(p.x)+3}" y2="${Y(p.y-p.e)}" stroke="${s.color}" stroke-width="1.4" opacity=".7"/>`;
+      }
+      g+=`<circle cx="${X(p.x)}" cy="${Y(p.y)}" r="3.5" fill="#0E1418" stroke="${s.color}" stroke-width="2"/>`;
+    });
+  });
+  g+=`</svg>`;
+  container.innerHTML = g;
+}
+
+function renderCharts(){
+  const rows = aggregate();
+  const latEl=$("#chartLat"), thEl=$("#chartTh");
+  if(rows.length<2){
+    const msg='<div class="empty">Carregue ≥ 2 cenários para ver as curvas.</div>';
+    latEl.innerHTML=msg; thEl.innerHTML=msg; return;
+  }
+  const xs = rows.map(r=>r.pub);
+  // latency
+  lineChart(latEl, [
+    { color:getComputedStyle(document.body).getPropertyValue("--trace").trim(),
+      points: rows.map(r=>({x:r.pub,y:r.meanMs,e:r.meanSd})) },
+    { color:getComputedStyle(document.body).getPropertyValue("--trace-2").trim(),
+      points: rows.map(r=>({x:r.pub,y:r.p95})) }
+  ], { xs, yLabel:"latência (ms)" });
+  // throughput
+  const offered = parseFloat($("#offered").value)||0;
+  lineChart(thEl, [
+    { color:getComputedStyle(document.body).getPropertyValue("--trace-2").trim(),
+      points: rows.map(r=>({x:r.pub,y:r.throughput,e:r.thSd})) }
+  ], { xs, yLabel:"msg/s", refLine: rows.map(r=>({x:r.pub,y:r.pub*offered})) });
+}
+
+/* ---------- export ---------- */
+function setExport(on,rows){
+  $("#expAggCsv").disabled=!on; $("#expRunCsv").disabled=!on; $("#expJson").disabled=!on;
+  $("#expAggCsv").onclick=()=>download("agregado_mqtt.csv",aggCsv(rows));
+  $("#expRunCsv").onclick=()=>download("por_execucao_mqtt.csv",runCsv());
+  $("#expJson").onclick=()=>download("resultados_mqtt.json",JSON.stringify({aggregate:rows,runs:runRows()},null,2));
+}
+function aggCsv(rows){
+  const h="publishers,n_execucoes,latencia_media_ms,latencia_media_dp_ms,p50_ms,p95_ms,p95_dp_ms,p99_ms,dp_latencia_ms,throughput_msg_s,throughput_dp,integridade_R_S";
+  const b=rows.map(r=>[r.pub,r.n,r.meanMs,r.meanSd,r.p50,r.p95,r.p95Sd,r.p99,r.sdMs,r.throughput,r.thSd,r.integrity]
+    .map(v=>Number.isFinite(v)?v.toFixed(4):v).join(",")).join("\n");
+  return h+"\n"+b;
+}
+function runRows(){
+  return state.files.filter(f=>f.stats&&f.pub!=="").map(f=>({
+    publishers:f.pub, execucao:f.run, arquivo:f.name,
+    latencia_media_ms:f.stats.meanMs, dp_ms:f.stats.sdMs,
+    p50_ms:f.stats.p50, p95_ms:f.stats.p95, p99_ms:f.stats.p99,
+    min_ms:f.stats.minMs, max_ms:f.stats.maxMs,
+    throughput_msg_s:f.stats.throughput, n_mensagens:f.stats.nWin,
+    integridade_R_S:f.stats.integrity
+  })).sort((a,b)=>a.publishers-b.publishers||a.execucao-b.execucao);
+}
+function runCsv(){
+  const rows=runRows();
+  const h="publishers,execucao,arquivo,latencia_media_ms,dp_ms,p50_ms,p95_ms,p99_ms,min_ms,max_ms,throughput_msg_s,n_mensagens,integridade_R_S";
+  const b=rows.map(r=>[r.publishers,r.execucao,'"'+r.arquivo+'"',r.latencia_media_ms,r.dp_ms,r.p50_ms,r.p95_ms,r.p99_ms,r.min_ms,r.max_ms,r.throughput_msg_s,r.n_mensagens,r.integridade_R_S]
+    .map(v=>typeof v==="number"&&Number.isFinite(v)?v.toFixed(4):v).join(",")).join("\n");
+  return h+"\n"+b;
+}
+function download(name,text){
+  const blob=new Blob([text],{type:"text/plain;charset=utf-8"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob); a.download=name; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+</script>
+</body>
+</html>
